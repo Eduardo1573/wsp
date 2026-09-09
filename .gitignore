@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+
+# reverse-engineering scratch: 1.5MB compiled widgetset, re-fetchable
+tools/ws_perm.js
+tools/ws_nocache.js
+tools/certs/inter.der
+
+# dumps contain real student data
+tools/dump_*.json
+
+# never commit credentials
+.env
+*.local
+web/fixture.js
+tools/fixtures/

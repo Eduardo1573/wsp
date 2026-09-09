@@ -1,0 +1,14 @@
+name = "wsp-relay"
+main = "proxy/worker.js"
+compatibility_date = "2024-09-23"
+
+# The worker serves the PWA *and* relays to wsp.kbtu.kz from one origin.
+# Static files win for any path that exists in web/; everything else (the
+# /StudentSchedule/... relay paths) falls through to worker.js.
+[assets]
+directory = "web"
+
+# Same-origin now, so the app no longer needs a cross-origin grant. Kept as a
+# guard in case the frontend is ever hosted separately.
+# [vars]
+# ALLOWED_ORIGINS = "https://wsp-relay.kbtu.workers.dev"
