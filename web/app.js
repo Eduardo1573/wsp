@@ -4,6 +4,8 @@ import {
   parseSchedule, DAYS, DAY_FULL, todayKey, lessonStatus, nextUp, toMin,
 } from './lib/schedule.js';
 import { parseTable, toRecords, summarise, parseSubject, presenceOf } from './lib/journal.js';
+import { parseAttendance, hasActionable } from './lib/attendance.js';
+import { parseListing, enterFolder, goBack, downloadFile, menuItem } from './lib/files.js';
 
 const $ = (id) => document.getElementById(id);
 const CACHE_KEY = 'wsp.schedule.v1';
@@ -35,6 +37,20 @@ let session = null;
 let refreshing = false;
 
 let tab = 'schedule';
+let attendance = [];         // parsed lesson cards from /RegistrationOnline
+let attendSession = null;
+let attendLoading = false;
+let attendTimer = null;
+let marking = null;          // buttonPid currently being submitted
+let attendPolling = false;   // guards against overlapping polls
+let attendTicks = 0;
+let attendPollStart = 0;
+
+let filesSession = null;     // ONE long-lived session: navigation is server-side
+let filesRows = [];
+let filesCrumbs = [];        // display-only mirror of where we are
+let filesBusy = false;
+let downloading = null;
 let journal = null;          // { term, subjects: [{key, code, name, records, summary}] }
 let openSubject = null;      // key of the subject being viewed
 let journalLoading = false;
@@ -451,6 +467,345 @@ function openSubjectView(key) {
   if (sub && sub.records === null) loadSubjectRecords(key);
 }
 
+// ── attendance ───────────────────────────────────────────────
+function renderAttendance() {
+  const host = $('attendList');
+  const state = $('attendState');
+  const actionable = hasActionable(attendance);
+  $('attendBadge').hidden = !actionable;
+
+  // No placeholder dash: with nothing open there is simply nothing to say, and
+  // the empty state below already explains it.
+  const eyebrow = attendLoading ? 'Checking…'
+    : actionable ? 'Open now'
+    : attendance.length ? 'Nothing to mark' : '';
+  state.textContent = eyebrow;
+  state.hidden = !eyebrow;
+
+  if (!attendance.length) {
+    host.replaceChildren(Object.assign(document.createElement('div'), {
+      className: 'empty',
+      innerHTML: attendLoading
+        ? '<div class="big">Checking…</div><p>Looking for open attendance.</p>'
+        : '<div class="big">Nothing open</div>'
+          + '<p>The button appears only while a teacher opens it during a lesson.</p>',
+    }));
+    return;
+  }
+
+  host.replaceChildren(...attendance.map((it, i) => {
+    const card = document.createElement('article');
+    card.className = 'attend-card';
+    card.style.animationDelay = `${Math.min(i * 45, 260)}ms`;
+
+    card.append(Object.assign(document.createElement('div'),
+      { className: 'attend-course', textContent: it.course }));
+    if (it.teacher) {
+      card.append(Object.assign(document.createElement('div'),
+        { className: 'attend-meta', textContent: it.teacher }));
+    }
+    card.append(Object.assign(document.createElement('div'), {
+      className: 'attend-slot',
+      textContent: [it.lesson, it.start && it.end ? `${it.start} – ${it.end}` : '']
+        .filter(Boolean).join('  ·  '),
+    }));
+
+    const actions = document.createElement('div');
+    actions.className = 'attend-actions';
+
+    if (it.status === 'available') {
+      const btn = document.createElement('button');
+      btn.className = 'mark-btn';
+      btn.type = 'button';
+      const busy = marking === it.buttonPid;
+      btn.disabled = busy;
+      btn.textContent = busy ? 'Marking…' : (it.caption || 'Mark attendance');
+      btn.addEventListener('click', () => markAttendance(it.buttonPid));
+      actions.append(btn);
+      if (it.minutesLeft !== null) {
+        const cd = document.createElement('span');
+        cd.className = `countdown ${it.minutesLeft <= 1 ? 'urgent' : ''}`;
+        cd.textContent = `${it.minutesLeft} min left`;
+        actions.append(cd);
+      }
+    } else {
+      const chip = document.createElement('span');
+      chip.className = `chip ${it.status === 'marked' ? 'present' : ''}`;
+      chip.textContent = it.status === 'marked' ? (it.caption || 'Marked') : 'Closed';
+      actions.append(chip);
+    }
+
+    card.append(actions);
+    return card;
+  }));
+}
+
+async function getAttendSession(creds) {
+  if (attendSession) return attendSession;
+  const base = session && session.isLoggedIn
+    ? session
+    : await (async () => {
+        const s0 = new WspSession(RELAY_URL, 'StudentSchedule');
+        await s0.handshake(); await s0.announceBrowser(); await s0.setLanguage('en');
+        const r = await s0.login(creds.u, creds.p);
+        if (!r.ok) throw new WspError(r.error);
+        session = s0;
+        return s0;
+      })();
+  attendSession = await base.openView('RegistrationOnline', creds.u, creds.p);
+  return attendSession;
+}
+
+/** Full reload: new handshake, fresh connector tree. */
+async function loadAttendance() {
+  const creds = loadCreds();
+  if (!creds || !navigator.onLine || attendLoading) return;
+  attendLoading = true;
+  if (tab === 'attendance') renderAttendance();
+  try {
+    const s0 = await getAttendSession(creds);
+    await s0.reattach();
+    attendance = parseAttendance(s0);
+  } catch (err) {
+    console.warn('attendance load failed:', err);
+    attendSession = null;
+  } finally {
+    attendLoading = false;
+    renderAttendance();
+  }
+}
+
+/**
+ * Poll for a fresh render of /RegistrationOnline.
+ *
+ * That page declares no pollInterval and carries no Timer connector, so it never
+ * pushes: the countdown and the button's enabled flag are computed server-side
+ * when the view is built. An empty UIDL request would therefore return nothing,
+ * and only a re-render reveals a button that has just opened.
+ *
+ * resync() keeps the cached appId, so this is ONE POST rather than the two a
+ * full re-attach costs. It still only runs while the section is open and the
+ * page is visible — a backgrounded phone polls nothing.
+ */
+async function pollAttendance() {
+  if (attendPolling || attendLoading || marking) return;
+  if (!navigator.onLine || document.hidden || tab !== 'attendance') return;
+  // Back off after a long idle stretch. 3s is right during a lesson, but a tab
+  // left open all day would be ~28k requests from an IP every user shares.
+  // Anything actionable on screen keeps it at full speed.
+  const openFor = Date.now() - attendPollStart;
+  const idle = openFor > 10 * 60_000 && !hasActionable(attendance);
+  attendTicks += 1;
+  if (idle && attendTicks % 5 !== 0) return;        // 3s -> 15s once idle
+
+  attendPolling = true;
+  try {
+    if (!attendSession) { await loadAttendance(); return; }
+    await attendSession.resync();
+    const next = parseAttendance(attendSession);
+    // Repaint only on an actual change, so the card animations do not restart
+    // every three seconds.
+    if (JSON.stringify(next) !== JSON.stringify(attendance)) {
+      attendance = next;
+      renderAttendance();
+    }
+  } catch (err) {
+    console.warn('attendance poll failed:', err);
+    attendSession = null;
+  } finally {
+    attendPolling = false;
+  }
+}
+
+/** Press the mark button. Deliberate user action — never automatic. */
+async function markAttendance(buttonPid) {
+  if (marking) return;
+  marking = buttonPid;
+  renderAttendance();
+  try {
+    const s0 = await getAttendSession(loadCreds());
+    await s0.click(buttonPid);
+    attendance = parseAttendance(s0);
+  } catch (err) {
+    console.warn('mark failed:', err);
+  } finally {
+    marking = null;
+    renderAttendance();
+    loadAttendance();          // confirm against a fresh render of the page
+  }
+}
+
+function startAttendPolling() {
+  clearInterval(attendTimer);
+  attendTicks = 0;
+  attendPollStart = Date.now();
+  // 3s while the section is open. Stops on tab change and while the page is
+  // hidden, so a backgrounded phone is not polling.
+  attendTimer = setInterval(pollAttendance, 3_000);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (tab !== 'attendance') return;
+  if (document.hidden) return;          // the poll itself no-ops while hidden
+  loadAttendance();                     // catch up immediately on return
+});
+
+// ── files ────────────────────────────────────────────────────
+const FOLDER_SVG = 'M3.5 7.5a2 2 0 0 1 2-2h3.4l2 2.4h7.6a2 2 0 0 1 2 2v8.6a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z';
+const FILE_SVG = 'M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5zM14 3.5V8.5h5';
+const DL_SVG = 'M12 4v10m0 0l-4-4m4 4l4-4M5 19h14';
+
+function svgIcon(d, cls) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', cls);
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', d);
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  svg.append(path);
+  return svg;
+}
+
+function renderFiles() {
+  const host = $('filesList');
+  host.classList.toggle('is-loading', filesBusy);
+  $('filesPath').textContent = filesCrumbs.length ? filesCrumbs.join('  ›  ') : '';
+  $('filesPath').hidden = !filesCrumbs.length;
+  $('filesTitle').textContent = filesCrumbs.at(-1) || 'Files';
+  $('filesBack').hidden = filesCrumbs.length === 0;
+
+  if (!filesRows.length) {
+    host.replaceChildren(Object.assign(document.createElement('div'), {
+      className: 'empty',
+      innerHTML: filesBusy
+        ? '<div class="big">Loading…</div>'
+        : '<div class="big">Empty folder</div><p>Nothing here.</p>',
+    }));
+    return;
+  }
+
+  host.replaceChildren(...filesRows.map((row, i) => {
+    const el = document.createElement(row.isFolder ? 'button' : 'div');
+    el.className = `file-row ${row.isFolder ? '' : 'is-file'}`;
+    if (row.isFolder) el.type = 'button';
+    el.style.animationDelay = `${Math.min(i * 30, 240)}ms`;
+
+    el.append(svgIcon(row.isFolder ? FOLDER_SVG : FILE_SVG, 'file-glyph'));
+    el.append(Object.assign(document.createElement('div'),
+      { className: 'file-name', textContent: row.name }));
+
+    if (row.isFolder) {
+      el.append(svgIcon('M9 6l6 6-6 6', 'chev'));
+      el.addEventListener('click', () => openFolder(row));
+    } else if (row.download) {
+      const btn = document.createElement('button');
+      btn.className = 'dl-btn';
+      btn.type = 'button';
+      btn.title = `Download ${row.name}`;
+      btn.setAttribute('aria-label', `Download ${row.name}`);
+      btn.disabled = downloading === row.key;
+      btn.append(svgIcon(downloading === row.key ? 'M12 6v6l4 2' : DL_SVG, ''));
+      btn.addEventListener('click', (e) => { e.stopPropagation(); download(row); });
+      el.append(btn);
+    } else {
+      el.append(document.createElement('span'));
+    }
+    return el;
+  }));
+}
+
+async function getFilesSession(creds) {
+  if (filesSession) return filesSession;
+  const base = session && session.isLoggedIn
+    ? session
+    : await (async () => {
+        const s0 = new WspSession(RELAY_URL, 'StudentSchedule');
+        await s0.handshake(); await s0.announceBrowser(); await s0.setLanguage('en');
+        const r = await s0.login(creds.u, creds.p);
+        if (!r.ok) throw new WspError(r.error);
+        session = s0;
+        return s0;
+      })();
+  filesSession = await base.openView('StudentFiles', creds.u, creds.p);
+  filesCrumbs = [];
+  return filesSession;
+}
+
+async function loadFiles() {
+  const creds = loadCreds();
+  if (!creds || !navigator.onLine || filesBusy) return;
+  setFilesBusy(true);
+  renderFiles();                  // first load has nothing to preserve
+  try {
+    const s0 = await getFilesSession(creds);
+    filesRows = parseListing(s0);
+  } catch (err) {
+    console.warn('files load failed:', err);
+    filesSession = null;
+    filesRows = [];
+  } finally {
+    setFilesBusy(false);
+    renderFiles();
+  }
+}
+
+/** Dim the current listing in place while navigating.
+ *
+ *  Deliberately does NOT re-render: rebuilding the list replays the row
+ *  entrance animation, so the rows the user just tapped away from fade out and
+ *  then pop back in before the new folder arrives. Dim, swap once, done. */
+function setFilesBusy(busy) {
+  filesBusy = busy;
+  $('filesList').classList.toggle('is-loading', busy);
+}
+
+async function openFolder(row) {
+  if (filesBusy || !filesSession) return;
+  setFilesBusy(true);
+  try {
+    await enterFolder(filesSession, row);
+    filesCrumbs = [...filesCrumbs, row.name];
+    filesRows = parseListing(filesSession);
+  } catch (err) {
+    console.warn('enter folder failed:', err);
+  } finally {
+    setFilesBusy(false);
+    renderFiles();
+  }
+}
+
+async function upFolder() {
+  if (filesBusy || !filesSession || !filesCrumbs.length) return;
+  setFilesBusy(true);
+  try {
+    await goBack(filesSession);
+    filesCrumbs = filesCrumbs.slice(0, -1);
+    filesRows = parseListing(filesSession);
+  } catch (err) {
+    console.warn('go back failed:', err);
+  } finally {
+    setFilesBusy(false);
+    renderFiles();
+  }
+}
+
+async function download(row) {
+  if (downloading) return;
+  downloading = row.key;
+  renderFiles();
+  try {
+    await downloadFile(filesSession, row);
+  } catch (err) {
+    console.warn('download failed:', err);
+    alert(`Could not download ${row.name}`);
+  } finally {
+    downloading = null;
+    renderFiles();
+  }
+}
+
 // ── tabs ─────────────────────────────────────────────────────
 function setTab(next) {
   tab = next;
@@ -459,6 +814,25 @@ function setTab(next) {
   }
   $('view-schedule').hidden = tab !== 'schedule';
   $('view-journal').hidden = tab !== 'journal';
+  $('view-attendance').hidden = tab !== 'attendance';
+  $('view-files').hidden = tab !== 'files';
+
+  if (tab === 'files') {
+    clearInterval(attendTimer);
+    renderFiles();
+    // Navigation lives in the server-side session, so only load once; a reload
+    // would rebuild the view and drop us back at the root.
+    if (!filesRows.length) loadFiles();
+    return;
+  }
+
+  if (tab === 'attendance') {
+    renderAttendance();
+    loadAttendance();
+    startAttendPolling();
+    return;
+  }
+  clearInterval(attendTimer);
   if (tab === 'journal') {
     if (!journal) {
       const cached = loadJournal();
@@ -524,12 +898,16 @@ for (const b of document.querySelectorAll('.tab')) {
 $('journalBack').addEventListener('click', () => { openSubject = null; renderJournal(); });
 
 $('refresh').addEventListener('click', refresh);
+$('attendRefresh').addEventListener('click', loadAttendance);
+$('filesBack').addEventListener('click', upFolder);
 /** No sign-out control in the UI right now; kept reachable from the console. */
 window.wspSignOut = () => {
   localStorage.removeItem(CRED_KEY);
   localStorage.removeItem(CACHE_KEY);
   localStorage.removeItem(JOURNAL_KEY);
   journal = null; openSubject = null; journalSession = null; journalPidCache = null;
+  attendance = []; attendSession = null; clearInterval(attendTimer);
+  filesSession = null; filesRows = []; filesCrumbs = [];
   clearInterval(hbTimer);
   schedule = null;
   showLogin();

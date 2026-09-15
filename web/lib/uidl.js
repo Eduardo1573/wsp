@@ -84,6 +84,10 @@ export class WspSession {
     this.syncId = 0;
     this.clientId = 0;
     this.lastChanges = [];
+    // Latest legacy UIDL per connector. Legacy components (Table, MenuBar,
+    // selects) paint into `changes`, and a later response that does not repaint
+    // them must not erase what we already know.
+    this.legacy = {};
     this.state = {};
     this.types = {};
     this.hierarchy = {};
@@ -152,6 +156,7 @@ export class WspSession {
     this.uiId = payload['v-uiId'];
     const uidl = JSON.parse(payload.uidl);
     this.csrf = uidl['Vaadin-Security-Key'];
+    this.lastChanges = uidl.changes || [];
     this._absorb(uidl);
     return uidl;
   }
@@ -275,6 +280,17 @@ export class WspSession {
     return this.handshake();
   }
 
+  /** Cheaper re-render: keeps the cached appId so it skips the bootstrap GET and
+   *  costs a single POST. The server rebuilds the view, which is the only way to
+   *  observe changes on pages that declare no pollInterval — /RegistrationOnline
+   *  computes its countdown and button state at render time and never pushes. */
+  async resync() {
+    if (!this.appId) return this.reattach();
+    this.state = {}; this.types = {}; this.hierarchy = {}; this.typeNames = {};
+    this.syncId = 0; this.clientId = 0;
+    return this.handshake();
+  }
+
   async login(username, password) {
     const userPid = this.findOne('com.vaadin.ui.ComboBox');
     const passPid = this.findOne('com.vaadin.ui.PasswordField');
@@ -309,8 +325,53 @@ export class WspSession {
     return null;
   }
 
+  legacyOf(pid) {
+    const node = this.legacy[String(pid)];
+    return node ? [node] : [];
+  }
+
+  /** Vaadin 7 MenuBar is legacy-painted: its items arrive in `changes`, not in
+   *  shared state. Flatten them out of the retained UIDL. */
+  menuItems(pid) {
+    const out = [];
+    const stack = [...this.legacyOf(pid)];
+    while (stack.length) {
+      const n = stack.pop();
+      if (Array.isArray(n)) stack.push(...n);
+      else if (n && typeof n === 'object') {
+        if ('text' in n && 'id' in n) {
+          out.push({ id: n.id, text: n.text, enabled: n.enabled !== false });
+        }
+        stack.push(...Object.values(n));
+      }
+    }
+    const seen = new Set();
+    return out.filter((i) => !seen.has(i.id) && seen.add(i.id))
+      .sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+  }
+
+  /** MenuBar reports a click through the legacy `clickedId` variable. */
+  clickMenu(pid, itemId) {
+    return this.rpc([[String(pid), LEGACY, LEGACY, ['clickedId', uidlValue(Number(itemId))]]],
+      { raiseOnError: false });
+  }
+
+  /** Resolve a Vaadin "app://" resource against this view's root. */
+  resourceUrl(uRL) {
+    if (!uRL) return null;
+    if (uRL.startsWith('app://')) return `${this.relay}/${this.view}/${uRL.slice('app://'.length)}`;
+    if (uRL.startsWith('theme://')) return null;
+    return uRL;
+  }
+
   // ---- state mirror ----
   _absorb(frame) {
+    for (const ch of frame.changes || []) {
+      if (Array.isArray(ch) && ch.length >= 3 && ch[0] === 'change') {
+        const pid = String(ch[1]?.pid ?? '');
+        if (pid) this.legacy[pid] = ch;
+      }
+    }
     if (Number.isInteger(frame.syncId) && frame.syncId >= 0) this.syncId = frame.syncId;
     if ('clientId' in frame) this.clientId = frame.clientId;
     for (const [pid, st] of Object.entries(frame.state || {})) {

@@ -13,11 +13,12 @@
  *
  * Schedule data is NOT cached here — it lives in localStorage (see app.js).
  */
-const CACHE = 'wsp-shell-v12';
+const CACHE = 'wsp-shell-v17';
 
 const SHELL = [
   './', './index.html', './styles.css', './app.js', './config.js',
-  './lib/uidl.js', './lib/schedule.js', './lib/journal.js', './manifest.webmanifest',
+  './lib/uidl.js', './lib/schedule.js', './lib/journal.js', './lib/attendance.js', './lib/files.js',
+  './manifest.webmanifest',
   './icon.svg', './icon-152.png', './icon-167.png', './icon-180.png',
   './icon-192.png', './icon-512.png',
 ];
@@ -26,7 +27,7 @@ const shellPaths = new Set(SHELL.map((p) => new URL(p, self.location.href).pathn
 const indexPath = new URL('./index.html', self.location.href).pathname;
 
 // Anything the relay handles. Never cached, never intercepted.
-const RELAY = /^\/(StudentSchedule|JournalView)(\/(UIDL|HEARTBEAT))?\/?$/;
+const RELAY = /^\/(StudentSchedule|JournalView|RegistrationOnline|StudentFiles)(\/(UIDL|HEARTBEAT))?\/?$|^\/[A-Za-z]+\/APP\/connector\//;
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

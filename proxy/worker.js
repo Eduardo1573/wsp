@@ -18,7 +18,14 @@ const UPSTREAM = 'https://wsp.kbtu.kz';
 // Only these paths are relayable — keeps the worker from becoming an open proxy.
 // The trailing slash is significant: the browser-details handshake posts to
 // "/StudentSchedule/?v-<ts>", so a bare trailing slash must be allowed too.
-const ALLOWED = /^\/(StudentSchedule|JournalView)(\/(UIDL|HEARTBEAT))?\/?$/;
+const VIEWS = 'StudentSchedule|JournalView|RegistrationOnline|StudentFiles';
+const ALLOWED = new RegExp(`^/(${VIEWS})(/(UIDL|HEARTBEAT))?/?$`);
+
+// File downloads are plain authenticated GETs to a Vaadin connector resource:
+//   /StudentFiles/APP/connector/<uiId>/<connectorId>/dl/<filename>
+// Narrow on purpose — /APP/ can also expose other connector resources, so only
+// the download verb is relayed, and only under a known view.
+const DOWNLOAD = new RegExp(`^/(${VIEWS})/APP/connector/\\d+/\\d+/dl/[^/]+$`);
 
 function corsHeaders(origin) {
   return {
@@ -44,7 +51,8 @@ export default {
     }
 
     const url = new URL(request.url);
-    if (!ALLOWED.test(url.pathname)) {
+    const isDownload = DOWNLOAD.test(url.pathname);
+    if (!ALLOWED.test(url.pathname) && !isDownload) {
       return new Response('path not relayable', { status: 404, headers: corsHeaders(origin) });
     }
 
@@ -80,6 +88,15 @@ export default {
     const out = new Headers(corsHeaders(origin));
     const upstreamCT = upstreamResp.headers.get('Content-Type');
     if (upstreamCT) out.set('Content-Type', upstreamCT);
+    if (isDownload) {
+      // Carry the filename and length through so the browser can save it, and
+      // expose them to JS (a cross-origin read cannot see them otherwise).
+      for (const h of ['Content-Disposition', 'Content-Length']) {
+        const v = upstreamResp.headers.get(h);
+        if (v) out.set(h, v);
+      }
+      out.append('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length');
+    }
 
     // Hand every Set-Cookie back for the client to store. BOTH JSESSIONID and the
     // sticky `route` cookie are required — WSP is load-balanced and the session

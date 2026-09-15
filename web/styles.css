@@ -127,6 +127,7 @@ button { font: inherit; color: inherit; }
   margin: 0 0 3px; font-size: .74rem; font-weight: 600;
   letter-spacing: .15em; text-transform: uppercase; color: var(--accent);
 }
+.topbar-date[hidden] { display: none; }
 .topbar-title { font-size: clamp(1.7rem, 7vw, 2.15rem); }
 
 .icon-btn {
@@ -250,7 +251,7 @@ body:has(#app:not([hidden])) { overflow: hidden; }
 /* ── bottom tab bar ─────────────────────────────────────────── */
 .tabbar {
   flex: 0 0 auto;
-  display: grid; grid-template-columns: 1fr 1fr;
+  display: grid; grid-template-columns: repeat(4, 1fr);
   border-top: 1px solid var(--line);
   background: var(--bg);
   /* iOS reserves ~34px under the home indicator via safe-area-inset-bottom.
@@ -273,7 +274,7 @@ body:has(#app:not([hidden])) { overflow: hidden; }
   transition: color .16s var(--ease);
 }
 .tab svg { width: 30px; height: 30px; stroke-width: 1.7; }
-.tab span { font-size: .8rem; font-weight: 600; letter-spacing: .01em; }
+.tab span { font-size: .72rem; font-weight: 600; letter-spacing: 0; white-space: nowrap; }
 .tab[aria-selected="true"] { color: var(--accent); }
 .tab:active { transform: scale(.96); }
 
@@ -358,3 +359,84 @@ body:has(#app:not([hidden])) { overflow: hidden; }
   font-variant-numeric: tabular-nums; font-size: 1.05rem; font-weight: 700;
 }
 .record-score.none { color: var(--faint); font-weight: 500; }
+
+
+/* ── attendance ─────────────────────────────────────────────── */
+.attend { padding: 0 var(--gutter) 26px; }
+
+.attend-card {
+  padding: 15px 0; border-top: 1px solid var(--line);
+  animation: rise .4s var(--ease) both;
+}
+.attend > .attend-card:first-child { border-top: 0; }
+
+.attend-course { font-weight: 600; font-size: 1.02rem; line-height: 1.28; }
+.attend-meta { margin-top: 4px; font-size: .84rem; color: var(--muted); }
+.attend-meta .sep { opacity: .4; margin: 0 6px; }
+.attend-slot {
+  margin-top: 3px; font-size: .8rem; color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.attend-actions { display: flex; align-items: center; gap: 12px; margin-top: 11px; }
+
+.mark-btn {
+  padding: 11px 20px; border: 0; border-radius: var(--r-md);
+  background: var(--accent); color: var(--accent-ink);
+  font-weight: 700; cursor: pointer;
+  transition: transform .12s var(--ease), opacity .16s var(--ease);
+}
+.mark-btn:active { transform: scale(.97); }
+.mark-btn[disabled] { opacity: .6; cursor: default; }
+
+.countdown {
+  font-size: .8rem; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.countdown.urgent { color: var(--danger); }
+
+/* the tab badge, when something is markable right now */
+.tab-icon { position: relative; display: inline-flex; }
+.badge {
+  position: absolute; top: 0; right: -1px;
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--danger); border: 2px solid var(--bg);
+  animation: pulse 2s ease-in-out infinite;
+}
+.badge[hidden] { display: none !important; }
+
+
+/* ── files ──────────────────────────────────────────────────── */
+.files { padding: 0 var(--gutter) 26px; transition: opacity .12s var(--ease); }
+
+/* While navigating, dim the current listing rather than rebuilding it — a
+   rebuild replays the row animation and makes the old rows flash back. */
+.files.is-loading { opacity: .4; pointer-events: none; }
+
+.file-row {
+  display: grid; grid-template-columns: 22px 1fr auto;
+  gap: 0 13px; align-items: center;
+  width: 100%; padding: 14px 0; text-align: left;
+  background: none; border: 0; border-top: 1px solid var(--line);
+  color: inherit; cursor: pointer;
+  animation: rise .38s var(--ease) both;
+}
+.files > .file-row:first-child { border-top: 0; }
+.file-row:active { opacity: .6; }
+.file-row.is-file { cursor: default; }
+
+.file-glyph { width: 20px; height: 20px; stroke: var(--muted); fill: none; stroke-width: 1.8; }
+.file-row.is-file .file-glyph { stroke: var(--faint); }
+
+.file-name { font-size: .98rem; font-weight: 500; line-height: 1.3; overflow-wrap: anywhere; }
+
+.dl-btn {
+  display: grid; place-items: center;
+  width: 38px; height: 38px; border-radius: 50%;
+  background: var(--accent-wash); border: 0; color: var(--accent);
+  cursor: pointer; transition: transform .12s var(--ease), opacity .16s var(--ease);
+}
+.dl-btn:active { transform: scale(.92); }
+.dl-btn[disabled] { opacity: .5; cursor: default; }
+.dl-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; }
+
+.crumb { overflow-wrap: anywhere; }

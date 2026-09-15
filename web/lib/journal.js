@@ -31,12 +31,23 @@ export function parseTable(changes, pid) {
     if (!('cols' in attrs) && !('totalrows' in attrs)) continue;
 
     const columns = tagged(body, 'column').map((c) => c[1]?.caption ?? '');
-    const rows = tagged(body, 'tr').map((tr) => ({
-      key: String(tr[1]?.key ?? ''),
-      cells: tr.slice(2)
-        .filter((c) => typeof c !== 'object' || c === null)
-        .map((c) => (c == null ? '' : String(c))),
-    }));
+    const rows = tagged(body, 'tr').map((tr) => {
+      // Cells are positional and may be plain strings OR embedded components
+      // (an icon, a download button). Keep both: /StudentFiles puts the whole
+      // download mechanism in a component cell.
+      const cells = [];
+      const components = [];
+      for (const c of tr.slice(2)) {
+        if (c !== null && typeof c === 'object') { cells.push(null); components.push(c); }
+        else cells.push(c == null ? '' : String(c));
+      }
+      return {
+        key: String(tr[1]?.key ?? ''),
+        cells,
+        text: cells.filter((c) => c !== null),
+        components,
+      };
+    });
     return { columns, rows, totalrows: attrs.totalrows ?? rows.length };
   }
   return null;
@@ -72,7 +83,7 @@ export function toRecords(table) {
   const get = (cells, ...names) => {
     for (const n of names) {
       const i = idx[n];
-      if (i != null && i < cells.length) return cells[i].trim();
+      if (i != null && i < cells.length && cells[i] != null) return cells[i].trim();
     }
     return '';
   };

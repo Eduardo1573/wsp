@@ -80,6 +80,10 @@ class VaadinSession:
         self.state, self.types, self.hierarchy, self.type_names = {}, {}, {}, {}
         self.last_frames, self.server_rpc, self.last_meta = [], [], {}
         self.last_changes = []
+        # Latest legacy UIDL node per connector. Legacy components (Table,
+        # MenuBar, selects) paint into `changes` rather than shared state, and a
+        # later response that does not repaint them must not erase what we know.
+        self.legacy = {}
 
     def log(self, *a):
         if self.verbose:
@@ -118,9 +122,20 @@ class VaadinSession:
         self.ui_id = payload["v-uiId"]
         uidl = json.loads(payload["uidl"])
         self.csrf = uidl.get("Vaadin-Security-Key")
+        # Legacy component data (Table rows, select options) rides in `changes`
+        # on the handshake too, not only on RPC responses.
+        self.last_changes = uidl.get("changes") or []
         self._absorb(uidl)
         self.log(f"[handshake] uiId={self.ui_id} csrf={self.csrf}")
         return uidl
+
+    def resync(self):
+        """Single-POST re-render: keeps the cached app_id so no bootstrap GET."""
+        if not self.app_id:
+            return self.reattach()
+        self.state, self.types, self.hierarchy, self.type_names = {}, {}, {}, {}
+        self.sync_id = self.client_id = 0
+        return self.handshake()
 
     # ---------- 3. RPC ----------
     def rpc(self, calls, label="", raise_on_error=True):
@@ -152,6 +167,12 @@ class VaadinSession:
     def heartbeat(self):
         """Must run every cfg['heartbeatInterval'] seconds or the session dies."""
         return self.http.post(f"{self.url}/HEARTBEAT/?v-uiId={self.ui_id}", timeout=15).status_code
+
+    def click_menu(self, pid, item_id):
+        """Vaadin 7 MenuBar reports a click through the legacy `clickedId`
+        variable carrying the item's integer id."""
+        return self.rpc([[str(pid), LEGACY, LEGACY, ["clickedId", ["i", int(item_id)]]]],
+                        label=f"menu {pid}#{item_id}", raise_on_error=False)
 
     # ---------- high-level actions ----------
     def set_var(self, pid, name, value, label=None):
@@ -333,6 +354,39 @@ class VaadinSession:
             return "unknown error"
         return None
 
+    def _remember_legacy(self, changes):
+        for ch in changes or []:
+            if isinstance(ch, list) and len(ch) >= 3 and ch[0] == "change":
+                pid = str((ch[1] or {}).get("pid"))
+                if pid:
+                    self.legacy[pid] = ch
+
+    def legacy_of(self, pid):
+        """Latest legacy UIDL for a connector, as a one-element changes list."""
+        node = self.legacy.get(str(pid))
+        return [node] if node else []
+
+    def menu_items(self, pid):
+        """Flatten a MenuBar's items. Vaadin 7 MenuBar is legacy-painted, so the
+        items arrive in UIDL `changes` keyed by text/id, not in shared state."""
+        out, stack = [], list(self.legacy_of(pid))
+        while stack:
+            n = stack.pop()
+            if isinstance(n, dict):
+                if "text" in n and "id" in n:
+                    out.append({"id": n.get("id"), "text": n.get("text"),
+                                "enabled": n.get("enabled", True)})
+                stack.extend(n.values())
+            elif isinstance(n, list):
+                stack.extend(n)
+        seen, uniq = set(), []
+        for it in out:
+            if it["id"] in seen:
+                continue
+            seen.add(it["id"])
+            uniq.append(it)
+        return sorted(uniq, key=lambda x: (x["id"] is None, x["id"]))
+
     # ---------- state mirror ----------
     def _absorb(self, frame):
         sid = frame.get("syncId")
@@ -340,6 +394,7 @@ class VaadinSession:
             self.sync_id = sid
         if "clientId" in frame:
             self.client_id = frame["clientId"]
+        self._remember_legacy(frame.get("changes"))
         for pid, st in (frame.get("state") or {}).items():
             self.state.setdefault(pid, {}).update(st)
         self.types.update(frame.get("types") or {})

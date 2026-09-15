@@ -32,10 +32,21 @@ def parse_table(changes, pid=None):
         cols = [c[1].get("caption", "") for c in _tagged(body, "column")]
         rows = []
         for tr in _tagged(body, "tr"):
-            cells = [c for c in tr[2:] if not isinstance(c, (list, dict))]
+            # Cells are positional and may be plain strings OR embedded
+            # components (an icon, a download button). Keep both: dropping the
+            # components loses the very thing a file row is useful for.
+            cells, comps = [], []
+            for c in tr[2:]:
+                if isinstance(c, (list, dict)):
+                    cells.append(None)
+                    comps.append(c)
+                else:
+                    cells.append("" if c is None else str(c))
             rows.append({
                 "key": str(tr[1].get("key", "")),
-                "cells": [("" if c is None else str(c)) for c in cells],
+                "cells": cells,
+                "text": [c for c in cells if c is not None],
+                "components": comps,
             })
         return {
             "columns": cols,
@@ -74,7 +85,7 @@ def to_records(table):
     def get(cells, *names):
         for n in names:
             i = idx.get(n)
-            if i is not None and i < len(cells):
+            if i is not None and i < len(cells) and cells[i] is not None:
                 return cells[i].strip()
         return ""
     out = []
