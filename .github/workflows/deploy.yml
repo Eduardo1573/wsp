@@ -1,0 +1,85 @@
+# Deploys the Worker that serves the PWA (web/) and relays to wsp.kbtu.kz
+# (proxy/worker.js) — both ship together from the root wrangler.toml.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    # Docs and the Python workbench don't affect what's served.
+    paths:
+      - 'web/**'
+      - 'proxy/**'
+      - 'wrangler.toml'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+# Never let two deploys race; a queued one supersedes an older pending run.
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Holds the Cloudflare credentials. Restrict its deployment branches to
+    # `main` in repo settings so no other branch can borrow the token.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need the previous commit for the cache-version check
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The app is plain ES modules with no build step, so a parse error would
+      # otherwise only surface in the browser after it is already live.
+      - name: Check syntax
+        run: |
+          fail=0
+          for f in web/*.js web/lib/*.js proxy/worker.js; do
+            [ -e "$f" ] || continue
+            if node --input-type=module --check < "$f"; then
+              echo "ok   $f"
+            else
+              echo "::error file=$f::Syntax error"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      # sw.js lists index.html/styles.css/app.js/lib/uidl.js in its SHELL array.
+      # Leaving CACHE untouched means no new worker installs and the old entries
+      # are never purged. Warn rather than block — network-first fetch means an
+      # online user still gets fresh files either way.
+      - name: Warn if shell changed without a cache bump
+        if: github.event_name == 'push'
+        run: |
+          before='${{ github.event.before }}'
+          git cat-file -e "$before^{commit}" 2>/dev/null || exit 0
+          changed=$(git diff --name-only "$before" HEAD -- web/ | grep -v '^web/sw\.js$' || true)
+          [ -n "$changed" ] || exit 0
+          old=$(git show "$before:web/sw.js" 2>/dev/null | grep -m1 '^const CACHE' || true)
+          new=$(grep -m1 '^const CACHE' web/sw.js || true)
+          if [ -n "$old" ] && [ "$old" = "$new" ]; then
+            echo "::warning file=web/sw.js::Shell files changed but CACHE was not bumped ($new)"
+          fi
+
+      - name: Deploy
+        id: deploy
+        # Pinned to the v4.1.1 commit. Tags like @v4 are mutable and can be
+        # repointed; a SHA cannot. Bump deliberately, not silently.
+        uses: cloudflare/wrangler-action@4e88846969242f7752bcfdaf5511bfbb3985ca47
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4.136.3'
+
+      - name: Summary
+        run: |
+          echo "Deployed \`${GITHUB_SHA::7}\` -> ${{ steps.deploy.outputs.deployment-url }}" \
+            >> "$GITHUB_STEP_SUMMARY"
