@@ -75,6 +75,17 @@
   <main class="timeline" id="timeline"></main>
  </section>
 
+ <!-- ── notes ─────────────────────────────────────────────────────────────── -->
+ <section id="view-notes" class="view" hidden>
+  <header class="topbar">
+    <div class="topbar-main">
+      <p class="topbar-date">Personal</p>
+      <h1 class="topbar-title">Notes</h1>
+    </div>
+  </header>
+  <main id="notesList" class="notes"></main>
+ </section>
+
  <!-- ── journal ──────────────────────────────────────────────── -->
  <section id="view-journal" class="view" hidden>
   <header class="topbar">
@@ -146,6 +157,13 @@
        <path d="M5 3.5h11a3 3 0 0 1 3 3v14H8a3 3 0 0 1-3-3z"/><path d="M9 8h7M9 12h7"/>
      </svg>
      <span>Journal</span>
+   </button>
+   <button class="tab" data-tab="notes" role="tab" aria-selected="false">
+     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+          stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <path d="M5 4.5h14v15H5z"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>
+     </svg>
+     <span>Notes</span>
    </button>
    <button class="tab" data-tab="attendance" role="tab" aria-selected="false">
      <span class="tab-icon">

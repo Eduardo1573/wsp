@@ -11,6 +11,21 @@ const LS_RPC = 'com.r5.core.web.addon.client.localstorage.LocalStorageServerRpc'
 const BTN_RPC = 'com.vaadin.shared.ui.button.ButtonServerRpc';
 const LEGACY = 'v';
 
+function createBrowserUuid() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  if (globalThis.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return [...bytes].map((b, i) => {
+      const hex = b.toString(16).padStart(2, '0');
+      return [4, 6, 8, 10].includes(i) ? '-' + hex : hex;
+    }).join('');
+  }
+  return 'wsp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+}
+
 // MouseEventDetails is bean-serialized, NOT the comma-joined string form.
 const CLICK_EVENT = {
   button: 'LEFT', clientX: 120, clientY: 240,
@@ -93,7 +108,7 @@ export class WspSession {
     this.hierarchy = {};
     this.typeNames = {};
     // Persisted per install, exactly as a browser's localStorage would.
-    this.browserUuid = localStorage.getItem('secretBrowserUuid') || crypto.randomUUID();
+    this.browserUuid = localStorage.getItem('secretBrowserUuid') || createBrowserUuid();
     localStorage.setItem('secretBrowserUuid', this.browserUuid);
   }
 
