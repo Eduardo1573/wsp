@@ -71,9 +71,13 @@ jobs:
 
       - name: Deploy
         id: deploy
-        # Pinned to the v4.1.1 commit. Tags like @v4 are mutable and can be
-        # repointed; a SHA cannot. Bump deliberately, not silently.
-        uses: cloudflare/wrangler-action@4e88846969242f7752bcfdaf5511bfbb3985ca47
+        # The commit @v4 currently points to. Pinned by SHA because tags are
+        # mutable; @v4 in particular is repointed on every 4.x release.
+        #
+        # Must be this commit and not the v4.1.1 tag: the semver tags are
+        # source-only (dist/ is gitignored there), and the runner loads
+        # dist/index.mjs. Pinning a semver tag fails with "File not found".
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
