@@ -10,6 +10,7 @@ import { parseListing, enterFolder, goBack, downloadFile, menuItem } from './lib
 const $ = (id) => document.getElementById(id);
 const CACHE_KEY = 'wsp.schedule.v1';
 const JOURNAL_KEY = 'wsp.journal.v2';
+const NOTES_KEY = 'wsp.subject-notes.v1';
 const CRED_KEY = 'wsp.credentials.v1';
 
 /** Resolve JournalView connectors by class.
@@ -54,6 +55,7 @@ let downloading = null;
 let journal = null;          // { term, subjects: [{key, code, name, records, summary}] }
 let openSubject = null;      // key of the subject being viewed
 let journalLoading = false;
+let notes = {};
 
 // ── persistence ──────────────────────────────────────────────
 const loadCache = () => {
@@ -71,6 +73,68 @@ const loadJournal = () => {
 };
 const saveJournal = (data) =>
   localStorage.setItem(JOURNAL_KEY, JSON.stringify({ data, at: Date.now() }));
+
+const loadNotes = () => {
+  try {
+    const value = JSON.parse(localStorage.getItem(NOTES_KEY));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+};
+const saveNotes = () => localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+const subjectKey = (lesson) => lesson.code + '::' + lesson.name;
+
+function scheduleSubjects() {
+  const seen = new Map();
+  for (const day of DAYS) {
+    for (const lesson of schedule?.[day] || []) {
+      if (lesson.unparsed || !lesson.code || !lesson.name) continue;
+      const key = subjectKey(lesson);
+      if (!seen.has(key)) seen.set(key, { key, code: lesson.code, name: lesson.name });
+    }
+  }
+  return [...seen.values()];
+}
+
+function renderNotes() {
+  const host = $('notesList');
+  const subjects = scheduleSubjects();
+  if (!subjects.length) {
+    host.replaceChildren(Object.assign(document.createElement('div'), {
+      className: 'empty',
+      innerHTML: '<div class="big">No subjects</div><p>Your notes will appear here with the schedule.</p>',
+    }));
+    return;
+  }
+
+  host.replaceChildren(...subjects.map((sub, i) => {
+    const card = document.createElement('article');
+    card.className = 'note-card';
+    card.style.animationDelay = (Math.min(i * 40, 260)) + 'ms';
+
+    const heading = document.createElement('div');
+    heading.className = 'note-heading';
+    heading.append(
+      Object.assign(document.createElement('div'), { className: 'subject-name', textContent: sub.name }),
+      Object.assign(document.createElement('div'), { className: 'subject-code', textContent: sub.code }),
+    );
+
+    const input = document.createElement('textarea');
+    input.className = 'note-input';
+    input.rows = 3;
+    input.placeholder = 'Write a note about this subject…';
+    input.value = notes[sub.key] || '';
+    input.setAttribute('aria-label', 'Note for ' + sub.name);
+    input.addEventListener('input', () => {
+      const value = input.value;
+      if (value) notes[sub.key] = value;
+      else delete notes[sub.key];
+      saveNotes();
+    });
+
+    card.append(heading, input);
+    return card;
+  }));
+}
 
 // ── rendering ────────────────────────────────────────────────
 function renderDays() {
@@ -813,6 +877,7 @@ function setTab(next) {
     b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   }
   $('view-schedule').hidden = tab !== 'schedule';
+  $('view-notes').hidden = tab !== 'notes';
   $('view-journal').hidden = tab !== 'journal';
   $('view-attendance').hidden = tab !== 'attendance';
   $('view-files').hidden = tab !== 'files';
@@ -833,6 +898,10 @@ function setTab(next) {
     return;
   }
   clearInterval(attendTimer);
+  if (tab === 'notes') {
+    renderNotes();
+    return;
+  }
   if (tab === 'journal') {
     if (!journal) {
       const cached = loadJournal();
@@ -905,6 +974,7 @@ window.wspSignOut = () => {
   localStorage.removeItem(CRED_KEY);
   localStorage.removeItem(CACHE_KEY);
   localStorage.removeItem(JOURNAL_KEY);
+  localStorage.removeItem(NOTES_KEY);
   journal = null; openSubject = null; journalSession = null; journalPidCache = null;
   attendance = []; attendSession = null; clearInterval(attendTimer);
   filesSession = null; filesRows = []; filesCrumbs = [];
@@ -920,6 +990,7 @@ setInterval(() => { if (!$('app').hidden) { renderNextUp(); renderTimeline(); } 
 
 // ── boot ─────────────────────────────────────────────────────
 (function boot() {
+  notes = loadNotes();
   const cached = loadCache();
   if (cached?.data) {
     schedule = cached.data;

@@ -251,7 +251,7 @@ body:has(#app:not([hidden])) { overflow: hidden; }
 /* ── bottom tab bar ─────────────────────────────────────────── */
 .tabbar {
   flex: 0 0 auto;
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, 1fr);
   border-top: 1px solid var(--line);
   background: var(--bg);
   /* iOS reserves ~34px under the home indicator via safe-area-inset-bottom.
@@ -277,6 +277,23 @@ body:has(#app:not([hidden])) { overflow: hidden; }
 .tab span { font-size: .72rem; font-weight: 600; letter-spacing: 0; white-space: nowrap; }
 .tab[aria-selected="true"] { color: var(--accent); }
 .tab:active { transform: scale(.96); }
+
+/* ── notes ──────────────────────────────────────────────────────────────── */
+.notes { padding: 0 var(--gutter) 26px; }
+.note-card {
+  padding: 15px 0 18px; border-top: 1px solid var(--line);
+  animation: rise .4s var(--ease) both;
+}
+.notes > .note-card:first-child { border-top: 0; }
+.note-heading { margin-bottom: 9px; }
+.note-input {
+  display: block; width: 100%; min-height: 78px; resize: vertical;
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface); color: var(--text); font: inherit; line-height: 1.4;
+  transition: border-color .16s var(--ease), background .16s var(--ease);
+}
+.note-input::placeholder { color: var(--faint); }
+.note-input:focus { outline: none; border-color: var(--accent); background: var(--raised); }
 
 /* ── journal: subject list ──────────────────────────────────── */
 .subjects { padding: 0 var(--gutter) 26px; }
